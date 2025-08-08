@@ -1,0 +1,25 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Users can upload their own profile images
+    match /users/{userId}/profile/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Hairdressers can upload their profile and work images
+    match /hairdressers/{hairdresserId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        request.auth.uid == hairdresserId;
+    }
+    
+    // General media uploads (with size and type restrictions)
+    match /media/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null &&
+        request.resource.size < 10 * 1024 * 1024 && // 10MB max
+        request.resource.contentType.matches('image/.*');
+    }
+  }
+} 
