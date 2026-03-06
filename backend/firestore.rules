@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Private user profiles (only the owner can read/write)
+    match /users/{userId} {
+      allow read, create, update, delete: if isOwner(userId);
+    }
+
+    // Public provider profiles (anyone can read; only the provider can write)
+    match /providers/{providerId} {
+      allow read: if true;
+      allow create, update, delete: if isOwner(providerId);
+    }
+
+    // Bookings: only booking user or provider can read/write.
+    match /bookings/{bookingId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if isSignedIn()
+        && (resource.data.userId == request.auth.uid || resource.data.providerId == request.auth.uid);
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
