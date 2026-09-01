@@ -3,13 +3,51 @@
     "name": "BeautyBooking",
     "slug": "beautybooking",
     "version": "1.0.0",
-    "sdkVersion": "51.0.0",
     "platforms": [
       "ios",
       "android",
       "web"
     ],
     "orientation": "portrait",
-    "userInterfaceStyle": "automatic"
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "bundleIdentifier": "com.beautybooking.app"
+    },
+    "android": {
+      "package": "com.beautybooking.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#C9963A"
+      }
+    },
+    "web": {
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow BeautyBooking to access your photos to add them to your portfolio.",
+          "cameraPermission": "Allow BeautyBooking to use your camera to add photos to your portfolio."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#C9963A"
+        }
+      ],
+      "expo-video",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#FAF7F2"
+        }
+      ]
+    ]
   }
 }

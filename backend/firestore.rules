@@ -10,6 +10,11 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isBookingParticipant(bookingId) {
+      let booking = get(/databases/$(database)/documents/bookings/$(bookingId)).data;
+      return isSignedIn() && (booking.userId == request.auth.uid || booking.providerId == request.auth.uid);
+    }
+
     // Private user profiles (only the owner can read/write)
     match /users/{userId} {
       allow read, create, update, delete: if isOwner(userId);
@@ -26,6 +31,50 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
       allow read, update, delete: if isSignedIn()
         && (resource.data.userId == request.auth.uid || resource.data.providerId == request.auth.uid);
+    }
+
+    // All post/engagement writes go through the Cloud Functions API (Admin SDK, bypasses these
+    // rules). Defined here for documentation/defense-in-depth in case direct client access is
+    // ever added.
+
+    // Public portfolio content posted by providers.
+    match /posts/{postId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn() && request.resource.data.providerId == request.auth.uid;
+    }
+
+    match /postLikes/{likeId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /postSaves/{saveId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /postComments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Reviews: doc ID === bookingId (enforces one review per booking). Immutable once
+    // created; real writes go through the Cloud Functions API (Admin SDK).
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Chat messages: real-time reads via a Firestore client listener, scoped to the booking's
+    // two participants. All writes go through the Cloud Functions API (Admin SDK), same
+    // convention as `reviews` — never written directly by clients.
+    match /chats/{bookingId}/messages/{messageId} {
+      allow read: if isBookingParticipant(bookingId);
+      allow write: if false;
     }
 
     // Default deny

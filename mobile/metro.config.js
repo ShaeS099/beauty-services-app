@@ -1,23 +1,11 @@
-const { getDefaultConfig, mergeConfig } = require("@react-native/metro-config");
+const { getDefaultConfig } = require("expo/metro-config");
 
-/**
- * Metro configuration
- * https://facebook.github.io/metro/docs/configuration
- *
- * @type {import('metro-config').MetroConfig}
- */
-const config = {
-  resolver: {
-    alias: {
-      "@": "./src",
-      "@components": "./src/components",
-      "@screens": "./src/screens",
-      "@services": "./src/services",
-      "@utils": "./src/utils",
-      "@types": "./src/types",
-      "@hooks": "./src/hooks",
-    },
-  },
-};
+const config = getDefaultConfig(__dirname);
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+// Metro's package.json "exports" resolution (default since SDK 53) picks an entry point for
+// the Firebase JS SDK that breaks Auth's component registration on React Native ("Component
+// auth has not been registered yet"). Fall back to Firebase's CJS build instead.
+config.resolver.sourceExts.push("cjs");
+config.resolver.unstable_enablePackageExports = false;
+
+module.exports = config;

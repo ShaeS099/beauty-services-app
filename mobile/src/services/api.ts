@@ -3,31 +3,63 @@ import {
   User,
   Provider,
   Booking,
-  ProviderFilters,
+  BookingStatus,
+  UpdateUserRequest,
+  UpsertProviderRequest,
   CreateBookingRequest,
   UpdateBookingStatusRequest,
   FavouritesRequest,
   ApiResponse,
+  Post,
+  PostComment,
+  Review,
+  CreateReviewRequest,
+  CreatePostRequest,
+  ChatMessage,
+  SubmitVerificationRequest,
+  UserStats,
+  PublicUserProfile,
 } from "../types";
 
-const API_BASE_URL =
-  "https://us-central1-beauty-booking-app-68f00.cloudfunctions.net/api";
+export type FeedMode = "foryou" | "discover";
+
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || "";
+const REQUEST_TIMEOUT_MS = 15000;
+
+export interface ProviderQuery {
+  city?: string;
+  category?: string;
+  hairType?: string;
+  limit?: number;
+}
+
+/** Rejects with a timeout error if `promise` doesn't settle within `ms` — neither
+ * Firebase's `getIdToken()` nor `fetch()` time out on their own, and a single stalled
+ * request must never be able to hang a screen's loading state forever. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 class ApiService {
   private async getAuthToken(): Promise<string | null> {
-    try {
-      const user = auth.currentUser;
-      if (user) {
-        return await user.getIdToken();
-      }
-      return null;
-    } catch (error) {
-      console.error("Error getting auth token:", error);
-      return null;
-    }
+    const user = auth.currentUser;
+    if (!user) return null;
+    return withTimeout(user.getIdToken(), REQUEST_TIMEOUT_MS, "Auth token refresh");
   }
 
-  private async makeRequest<T>(
+  private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
@@ -35,229 +67,239 @@ class ApiService {
       const token = await this.getAuthToken();
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
+        ...(options.headers as Record<string, string> | undefined),
       };
+      if (token) headers.Authorization = `Bearer ${token}`;
 
-      // Merge headers properly
-      if (options.headers) {
-        if (
-          typeof options.headers === "object" &&
-          !Array.isArray(options.headers)
-        ) {
-          Object.assign(headers, options.headers);
-        }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      let response: Response;
+      try {
+        response = await fetch(`${API_BASE_URL}${endpoint}`, {
+          ...options,
+          headers,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
       }
 
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        ...options,
-        headers,
-      });
-
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        return {
-          success: false,
-          error: data.error || "An error occurred",
-        };
+        return { success: false, error: data?.error || `Request failed: ${response.status}` };
       }
-
-      return {
-        success: true,
-        data,
-      };
+      return { success: true, data: data as T };
     } catch (error) {
-      console.error("API request failed:", error);
-      return {
-        success: false,
-        error: "Network error occurred",
-      };
+      console.error(`API request failed (${endpoint}):`, error);
+      const message = error instanceof Error && error.name === "AbortError" ? "Request timed out" : "Network error occurred";
+      return { success: false, error: message };
     }
   }
 
-  // User endpoints
-  async createUserProfile(
-    name: string,
-    email: string,
-    role: "client" | "provider" = "client"
-  ): Promise<ApiResponse<User>> {
-    return this.makeRequest<User>("/users", {
-      method: "POST",
-      body: JSON.stringify({ name, email, role }),
-    });
+  // Health
+  getHealth(): Promise<ApiResponse<{ ok: boolean }>> {
+    return this.request("/health");
   }
 
-  async getUserProfile(): Promise<ApiResponse<User>> {
-    return this.makeRequest<User>("/users/profile");
+  // Users
+  getUserProfile(): Promise<ApiResponse<User>> {
+    return this.request<User>("/users/me");
   }
 
-  async updateUserProfile(updates: Partial<User>): Promise<ApiResponse<User>> {
-    return this.makeRequest<User>("/users/profile", {
+  updateUserProfile(updates: UpdateUserRequest): Promise<ApiResponse<User>> {
+    return this.request<User>("/users/me", {
       method: "PUT",
       body: JSON.stringify(updates),
     });
   }
 
-  // Provider endpoints
-  async getProvidersByCategory(
-    category: string,
-    filters?: ProviderFilters
-  ): Promise<ApiResponse<Provider[]>> {
-    const params = new URLSearchParams();
-    if (filters?.latitude)
-      params.append("latitude", filters.latitude.toString());
-    if (filters?.longitude)
-      params.append("longitude", filters.longitude.toString());
-    if (filters?.radius) params.append("radius", filters.radius.toString());
-    if (filters?.minPrice)
-      params.append("minPrice", filters.minPrice.toString());
-    if (filters?.maxPrice)
-      params.append("maxPrice", filters.maxPrice.toString());
-
-    const queryString = params.toString();
-    const url = `/providers/category/${encodeURIComponent(category)}${
-      queryString ? `?${queryString}` : ""
-    }`;
-
-    return this.makeRequest<Provider[]>(url);
-  }
-
-  async getProvidersFiltered(
-    filters: ProviderFilters
-  ): Promise<ApiResponse<Provider[]>> {
-    const params = new URLSearchParams();
-    if (filters.category) params.append("category", filters.category);
-    if (filters.minPrice)
-      params.append("minPrice", filters.minPrice.toString());
-    if (filters.maxPrice)
-      params.append("maxPrice", filters.maxPrice.toString());
-    if (filters.latitude)
-      params.append("latitude", filters.latitude.toString());
-    if (filters.longitude)
-      params.append("longitude", filters.longitude.toString());
-    if (filters.radius) params.append("radius", filters.radius.toString());
-
-    const queryString = params.toString();
-    const url = `/providers/filter${queryString ? `?${queryString}` : ""}`;
-
-    return this.makeRequest<Provider[]>(url);
-  }
-
-  async getProviderDetails(providerId: string): Promise<ApiResponse<Provider>> {
-    return this.makeRequest<Provider>(`/providers/${providerId}`);
-  }
-
-  // Booking endpoints
-  async createBooking(
-    bookingData: CreateBookingRequest
-  ): Promise<ApiResponse<Booking>> {
-    return this.makeRequest<Booking>("/bookings", {
+  updateFavourites(body: FavouritesRequest): Promise<ApiResponse<User>> {
+    return this.request<User>("/users/me/favourites", {
       method: "POST",
-      body: JSON.stringify(bookingData),
+      body: JSON.stringify(body),
     });
   }
 
-  async updateBookingStatus(
+  // Providers
+  getProviders(query: ProviderQuery = {}): Promise<ApiResponse<Provider[]>> {
+    const params = new URLSearchParams();
+    if (query.city) params.append("city", query.city);
+    if (query.category) params.append("category", query.category);
+    if (query.hairType) params.append("hairType", query.hairType);
+    if (query.limit) params.append("limit", String(query.limit));
+    const qs = params.toString();
+    return this.request<Provider[]>(`/providers${qs ? `?${qs}` : ""}`);
+  }
+
+  getProvider(id: string): Promise<ApiResponse<Provider>> {
+    return this.request<Provider>(`/providers/${id}`);
+  }
+
+  upsertMyProviderProfile(body: UpsertProviderRequest): Promise<ApiResponse<Provider>> {
+    return this.request<Provider>("/providers/me", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  submitVerification(body: SubmitVerificationRequest): Promise<ApiResponse<Provider>> {
+    return this.request<Provider>("/providers/me/verification", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Admin
+  getPendingVerifications(): Promise<ApiResponse<Provider[]>> {
+    return this.request<Provider[]>("/admin/verifications");
+  }
+
+  reviewVerification(providerId: string, status: "verified" | "rejected"): Promise<ApiResponse<Provider>> {
+    return this.request<Provider>(`/admin/providers/${providerId}/verification`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  // Bookings
+  createBooking(body: CreateBookingRequest): Promise<ApiResponse<Booking>> {
+    return this.request<Booking>("/bookings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  getBookings(status?: BookingStatus): Promise<ApiResponse<Booking[]>> {
+    return this.request<Booking[]>(`/bookings${status ? `?status=${status}` : ""}`);
+  }
+
+  updateBookingStatus(
     bookingId: string,
-    status: UpdateBookingStatusRequest
-  ): Promise<ApiResponse<{ success: boolean }>> {
-    return this.makeRequest<{ success: boolean }>(
-      `/bookings/${bookingId}/status`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(status),
-      }
-    );
+    body: UpdateBookingStatusRequest
+  ): Promise<ApiResponse<Booking>> {
+    return this.request<Booking>(`/bookings/${bookingId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
   }
 
-  async getUserBookings(status?: string): Promise<ApiResponse<Booking[]>> {
-    const url = status ? `/bookings/user?status=${status}` : "/bookings/user";
-    return this.makeRequest<Booking[]>(url);
-  }
-
-  async getProviderBookings(
-    date?: string,
-    status?: string
-  ): Promise<ApiResponse<Booking[]>> {
-    const params = new URLSearchParams();
-    if (date) params.append("date", date);
-    if (status) params.append("status", status);
-
-    const queryString = params.toString();
-    const url = `/bookings/provider${queryString ? `?${queryString}` : ""}`;
-
-    return this.makeRequest<Booking[]>(url);
-  }
-
-  async getBookingDetails(bookingId: string): Promise<ApiResponse<Booking>> {
-    return this.makeRequest<Booking>(`/bookings/${bookingId}`);
-  }
-
-  // Favourites endpoints
-  async updateFavourites(
-    favouritesData: FavouritesRequest
-  ): Promise<ApiResponse<User>> {
-    return this.makeRequest<User>("/users/favourites", {
+  // Reviews
+  submitReview(bookingId: string, body: CreateReviewRequest): Promise<ApiResponse<Review>> {
+    return this.request<Review>(`/bookings/${bookingId}/review`, {
       method: "POST",
-      body: JSON.stringify(favouritesData),
+      body: JSON.stringify(body),
     });
   }
 
-  // Helper methods
-  async addToFavourites(providerId: string): Promise<ApiResponse<User>> {
-    return this.updateFavourites({ providerId, action: "add" });
+  getProviderReviews(providerId: string): Promise<ApiResponse<Review[]>> {
+    return this.request<Review[]>(`/providers/${providerId}/reviews`);
   }
 
-  async removeFromFavourites(providerId: string): Promise<ApiResponse<User>> {
-    return this.updateFavourites({ providerId, action: "remove" });
+  // Follow
+  getFollowStatus(providerId: string): Promise<ApiResponse<{ following: boolean }>> {
+    return this.request<{ following: boolean }>(`/providers/${providerId}/follow-status`);
   }
 
-  // Distance calculation helper
-  calculateDistance(
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ): number {
-    const R = 6371; // Earth's radius in kilometers
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+  followProvider(providerId: string): Promise<ApiResponse<{ following: boolean }>> {
+    return this.request<{ following: boolean }>(`/providers/${providerId}/follow`, { method: "POST" });
   }
 
-  // Format price helper
+  unfollowProvider(providerId: string): Promise<ApiResponse<{ following: boolean }>> {
+    return this.request<{ following: boolean }>(`/providers/${providerId}/follow`, { method: "DELETE" });
+  }
+
+  getMyStats(): Promise<ApiResponse<UserStats>> {
+    return this.request<UserStats>("/users/me/stats");
+  }
+
+  getPublicUser(id: string): Promise<ApiResponse<PublicUserProfile>> {
+    return this.request<PublicUserProfile>(`/users/${id}`);
+  }
+
+  getUserStats(id: string): Promise<ApiResponse<UserStats>> {
+    return this.request<UserStats>(`/users/${id}/stats`);
+  }
+
+  // Chat
+  sendMessage(bookingId: string, text: string): Promise<ApiResponse<ChatMessage>> {
+    return this.request<ChatMessage>(`/bookings/${bookingId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  // Posts / feed
+  getFeed(mode: FeedMode, limit = 30): Promise<ApiResponse<Post[]>> {
+    return this.request<Post[]>(`/posts/feed?mode=${mode}&limit=${limit}`);
+  }
+
+  getSavedPosts(): Promise<ApiResponse<Post[]>> {
+    return this.request<Post[]>("/posts/saved");
+  }
+
+  getProviderPosts(providerId: string): Promise<ApiResponse<Post[]>> {
+    return this.request<Post[]>(`/providers/${providerId}/posts`);
+  }
+
+  createPost(body: CreatePostRequest): Promise<ApiResponse<Post>> {
+    return this.request<Post>("/posts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  deletePost(id: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return this.request(`/posts/${id}`, { method: "DELETE" });
+  }
+
+  likePost(postId: string): Promise<ApiResponse<{ liked: boolean }>> {
+    return this.request(`/posts/${postId}/like`, { method: "POST" });
+  }
+
+  unlikePost(postId: string): Promise<ApiResponse<{ liked: boolean }>> {
+    return this.request(`/posts/${postId}/like`, { method: "DELETE" });
+  }
+
+  savePost(postId: string): Promise<ApiResponse<{ saved: boolean }>> {
+    return this.request(`/posts/${postId}/save`, { method: "POST" });
+  }
+
+  unsavePost(postId: string): Promise<ApiResponse<{ saved: boolean }>> {
+    return this.request(`/posts/${postId}/save`, { method: "DELETE" });
+  }
+
+  getComments(postId: string): Promise<ApiResponse<PostComment[]>> {
+    return this.request<PostComment[]>(`/posts/${postId}/comments`);
+  }
+
+  addComment(postId: string, text: string): Promise<ApiResponse<PostComment>> {
+    return this.request<PostComment>(`/posts/${postId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  // Formatting helpers
   formatPrice(price: number): string {
-    return `$${price.toFixed(2)}`;
+    return `£${price.toFixed(2)}`;
   }
 
-  // Format date helper
-  formatDate(date: Date): string {
-    return date.toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
+  formatDate(iso: string): string {
+    return new Date(iso).toLocaleDateString("en-GB", {
+      weekday: "short",
       day: "numeric",
+      month: "short",
     });
   }
 
-  // Format time helper
-  formatTime(date: Date): string {
-    return date.toLocaleTimeString("en-US", {
+  formatTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString("en-GB", {
       hour: "2-digit",
       minute: "2-digit",
     });
   }
 }
 
-export const apiService = new ApiService();
+const apiService = new ApiService();
 export default apiService;
