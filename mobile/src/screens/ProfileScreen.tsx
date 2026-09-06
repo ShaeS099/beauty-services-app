@@ -237,7 +237,7 @@ const ProfileScreen = () => {
     ]);
     if (statsRes.success && statsRes.data) setStats(statsRes.data);
     if (postsRes && postsRes.success && postsRes.data) {
-      setPosts(postsRes.data.filter((p) => !p.category));
+      setPosts(postsRes.data);
     }
     setRefreshing(false);
   }, []);
@@ -463,7 +463,7 @@ const ProfileScreen = () => {
           <EmptyState
             icon="grid-outline"
             title="No posts yet"
-            subtitle="Share an everyday moment — it'll show up here."
+            subtitle="Your gallery photos and feed videos will show up here."
             actionLabel="New post"
             onAction={() => navigation.navigate("CreatePost")}
           />

@@ -14,7 +14,7 @@ export type RootStackParamList = {
   PostDetail: { post: Post };
   Comments: { postId: string };
   Review: { bookingId: string; providerName: string; serviceName: string };
-  CreatePost: undefined;
+  CreatePost: { destination?: "gallery" | "feed" } | undefined;
   MyPortfolio: undefined;
   Chat: { bookingId: string; otherPartyName: string };
   AdminVerifications: undefined;

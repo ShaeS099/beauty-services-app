@@ -967,8 +967,12 @@ function scorePost(post: Post, weights: Record<string, number>): number {
 
 /**
  * Personalized feed.
- * mode=foryou (default): ranks a recent pool of posts by the user's quiz interests + engagement history.
- * mode=discover: filters the pool to the user's selected categories, sorted by popularity.
+ * mode=discover (professional gallery, Pinterest-style): gallery photos only (mediaType
+ *   "image" + category), filtered to the user's selected categories, sorted by popularity.
+ * mode=foryou (default; content feed, TikTok-style): feed videos only (mediaType "video"),
+ *   ranked by the user's quiz interests + engagement history.
+ * These are deliberately disjoint pools — a gallery photo never appears in For You and a feed
+ * video never appears in Discover.
  */
 app.get('/posts/feed', authenticateUser, async (req, res) => {
   const uid = requireAuth(req, res);
@@ -985,17 +989,25 @@ app.get('/posts/feed', authenticateUser, async (req, res) => {
     const posts = poolSnap.docs.map((d) => ({ id: d.id, ...d.data() } as Post));
 
     if (mode === 'discover') {
+      const galleryPosts = posts.filter((p) => p.mediaType === 'image' && !!p.category);
       const userSnap = await db.collection('users').doc(uid).get();
       const interests = userSnap.data()?.interests as UserInterests | undefined;
       const categories = interests?.categories ?? [];
-      const filtered = categories.length > 0 ? posts.filter((p) => !!p.category && categories.includes(p.category)) : posts;
-      const sorted = filtered.sort((a, b) => b.likeCount - a.likeCount);
+      // Quiz interests bias the default sort order (interest-matching photos surface first) but
+      // never hide a category outright — the on-screen category chips are the actual filter, and
+      // every category must stay browsable regardless of what was picked at onboarding.
+      const sorted = galleryPosts.sort((a, b) => {
+        const aMatch = categories.includes(a.category!) ? 1 : 0;
+        const bMatch = categories.includes(b.category!) ? 1 : 0;
+        return aMatch !== bMatch ? bMatch - aMatch : b.likeCount - a.likeCount;
+      });
       res.status(200).json(sorted.slice(0, limit).map((p) => annotatePost(p, sets)));
       return;
     }
 
+    const feedPosts = posts.filter((p) => p.mediaType === 'video');
     const weights = await computeUserWeights(uid, sets);
-    const sorted = posts
+    const sorted = feedPosts
       .map((post) => ({ post, score: scorePost(post, weights) }))
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.post);
@@ -1091,6 +1103,10 @@ app.post('/posts', authenticateUser, async (req, res) => {
       return void badRequest(res, "thumbnailUrl must point to this user's own upload path");
     }
   }
+  // Two distinct posting destinations: a gallery photo (tagged by category, shows in Discover
+  // and the provider's portfolio) or a feed video (TikTok-style, shows in For You). A photo
+  // with no category has nowhere to surface, so it's rejected rather than left orphaned.
+  if (body.mediaType === 'image' && !body.category) return void badRequest(res, 'category is required for a gallery photo');
   if (body.category !== undefined && !isValidCategory(body.category)) return void badRequest(res, 'category is invalid');
   if (body.subcategory !== undefined) {
     if (!body.category) return void badRequest(res, 'subcategory requires a category');

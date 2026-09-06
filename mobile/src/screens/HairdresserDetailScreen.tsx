@@ -196,14 +196,6 @@ const HairdresserDetailScreen = () => {
           overflow: "hidden",
           backgroundColor: colors.surface,
         },
-        videoBadge: {
-          position: "absolute",
-          top: 4,
-          right: 4,
-          backgroundColor: "rgba(0,0,0,0.5)",
-          borderRadius: 10,
-          padding: 3,
-        },
         empty: {
           color: colors.subtext,
           fontSize: 14,
@@ -261,9 +253,10 @@ const HairdresserDetailScreen = () => {
     } else {
       setError(providerRes.error || "Provider not found");
     }
-    // The public "Portfolio" section only shows categorized (service) posts — everyday posts
-    // this provider makes live on their main Profile page instead.
-    if (postsRes.success && postsRes.data) setPosts(postsRes.data.filter((p) => !!p.category));
+    // The public "Portfolio" section is gallery photos only (mediaType "image" + category) —
+    // feed videos this provider posts live in For You instead, not here.
+    if (postsRes.success && postsRes.data)
+      setPosts(postsRes.data.filter((p) => p.mediaType === "image" && !!p.category));
     if (reviewsRes.success && reviewsRes.data) setReviews(reviewsRes.data);
     setFavourite(!!userRes?.favourites?.includes(providerId));
     if (followRes && followRes.success && followRes.data) setFollowing(followRes.data.following);
@@ -415,11 +408,6 @@ const HairdresserDetailScreen = () => {
                   transition={200}
                   cachePolicy="memory-disk"
                 />
-                {post.mediaType === "video" ? (
-                  <View style={styles.videoBadge}>
-                    <Ionicons name="play" size={12} color="#FFFFFF" />
-                  </View>
-                ) : null}
               </TouchableOpacity>
             ))}
           </View>

@@ -4,19 +4,30 @@ import { createTestUser, authHeader } from "./helpers";
 
 jest.mock("../src/geocoding", () => ({ geocodeAddress: jest.fn().mockResolvedValue(null) }));
 
-describe("POST /posts — open to all users, category optional", () => {
-  it("lets a plain client (no provider profile) post without a category", async () => {
+describe("POST /posts — open to all users; gallery photos vs feed videos", () => {
+  it("lets a plain client (no provider profile) post a feed video without a category", async () => {
     const client = await createTestUser("client");
-    const mediaUrl = `https://storage.example/providers/${client.uid}/posts/1.jpg`;
+    const mediaUrl = `https://storage.example/providers/${client.uid}/posts/1.mp4`;
 
     const res = await request(app)
       .post("/posts")
       .set(...authHeader(client))
-      .send({ mediaUrl, mediaType: "image", caption: "just a regular day" })
+      .send({ mediaUrl, mediaType: "video", caption: "just a regular day" })
       .expect(201);
 
     expect(res.body.providerId).toBe(client.uid);
     expect(res.body.category).toBeUndefined();
+  });
+
+  it("rejects a gallery photo (mediaType image) with no category", async () => {
+    const client = await createTestUser("client");
+    const mediaUrl = `https://storage.example/providers/${client.uid}/posts/no-category.jpg`;
+
+    await request(app)
+      .post("/posts")
+      .set(...authHeader(client))
+      .send({ mediaUrl, mediaType: "image", caption: "no category" })
+      .expect(400);
   });
 
   it("still requires a valid category when one is given, and rejects a subcategory without a category", async () => {
@@ -32,7 +43,7 @@ describe("POST /posts — open to all users, category optional", () => {
     await request(app)
       .post("/posts")
       .set(...authHeader(client))
-      .send({ mediaUrl, mediaType: "image", subcategory: "Braids" })
+      .send({ mediaUrl, mediaType: "video", subcategory: "Braids" })
       .expect(400);
   });
 

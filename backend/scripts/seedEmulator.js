@@ -69,7 +69,21 @@ if (admin.apps.length === 0) {
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 
-async function sampleProvider(id, city, lat, lng, name, categories, hairTypes, verificationStatus, photoQuery) {
+/** Deletes every doc in `collectionName`. Used to clear `posts` before reseeding, since dev
+ * emulators are long-lived and can pick up unrelated stray docs over time (e.g. from running the
+ * backend test suite directly against a running dev emulator instead of an ephemeral
+ * `firebase emulators:exec` one) — a full wipe-then-reseed keeps the collection exactly matching
+ * what this script defines, rather than merge-accumulating on top of whatever's already there. */
+async function wipeCollection(collectionName) {
+  const snap = await db.collection(collectionName).get();
+  if (snap.empty) return;
+  const batch = db.batch();
+  snap.docs.forEach((doc) => batch.delete(doc.ref));
+  await batch.commit();
+  console.log(`  cleared ${snap.size} existing doc(s) from "${collectionName}"`);
+}
+
+async function sampleProvider(id, city, lat, lng, name, categories, hairTypes, verificationStatus, photoQuery, services) {
   const photoUrl = (await fetchPexelsPhoto(photoQuery)) ?? '';
   return {
     id,
@@ -80,10 +94,7 @@ async function sampleProvider(id, city, lat, lng, name, categories, hairTypes, v
     categories,
     hairTypes,
     verificationStatus,
-    services: [
-      { name: 'Classic haircut', price: 25, category: 'Hair', durationMins: 30 },
-      { name: 'Full set nails', price: 40, category: 'Nails', durationMins: 60 },
-    ],
+    services,
     availability: {
       monday: [{ start: '09:00', end: '17:00' }],
       tuesday: [{ start: '09:00', end: '17:00' }],
@@ -111,37 +122,28 @@ function sampleReview(bookingId, providerId, userName, rating, text) {
   };
 }
 
-// A handful of image posts per provider (deterministic picsum.photos seeds) plus one
-// well-known public sample video, so the Discover/For You feeds have something to show.
-// A short (~10s, ~1MB) clip. The previous URL (Google's commondatastorage/gtv-videos-bucket)
-// now 403s — that bucket appears to no longer be publicly readable — so this points at
+// A short (~10s, ~1MB) clip used as the last-resort fallback for feed videos when no
+// PEXELS_API_KEY is set. The previous URL (Google's commondatastorage/gtv-videos-bucket) now
+// 403s — that bucket appears to no longer be publicly readable — so this points at
 // test-videos.co.uk's mirror of the same "Big Buck Bunny" sample clip instead.
 const SAMPLE_VIDEO_URL = 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4';
 
-/** `query` is the real search term (e.g. "box braids") used against Pexels when a key is
- * configured; `seed` keeps the picsum fallback deterministic when it isn't. */
-async function samplePost(id, providerId, category, subcategory, seed, mediaType = 'image', hairTypes, query) {
-  let mediaUrl;
-  let thumbnailUrl;
-
-  if (mediaType === 'video') {
-    const pexels = await fetchPexelsVideo(query ?? category);
-    mediaUrl = pexels?.mediaUrl ?? SAMPLE_VIDEO_URL;
-    thumbnailUrl = pexels?.thumbnailUrl ?? `https://picsum.photos/seed/${seed}-thumb/800/1000`;
-  } else {
-    mediaUrl = (await fetchPexelsPhoto(query ?? category)) ?? `https://picsum.photos/seed/${seed}/800/1000`;
-  }
-
+/**
+ * Two distinct kinds of post, matching the app's posting flow:
+ *  - Gallery photo (mediaType "image"): tagged with a category, shows in Discover + the
+ *    provider's portfolio. `category`/`subcategory` are required for this kind.
+ *  - Feed video (mediaType "video"): TikTok-style, shows in For You. No category needed.
+ * `query` is the real Pexels search term (e.g. "box braids") used when a key is configured;
+ * `seed` keeps the picsum fallback deterministic when it isn't.
+ */
+async function galleryPost(id, providerId, category, subcategory, seed, hairTypes, query) {
+  const mediaUrl = (await fetchPexelsPhoto(query)) ?? `https://picsum.photos/seed/${seed}/800/1000`;
   return {
     id,
     providerId,
-    mediaType,
+    mediaType: 'image',
     mediaUrl,
-    // Real uploads generate an actual video-frame thumbnail (see CreatePostScreen); seeding
-    // bypasses that upload flow, so a video post here gets either Pexels' own thumbnail or a
-    // stand-in picsum image instead.
-    thumbnailUrl,
-    caption: `${category} inspo from this studio ✨`,
+    caption: `${subcategory ?? category} inspo from this studio ✨`,
     category,
     subcategory,
     hairTypes,
@@ -153,15 +155,56 @@ async function samplePost(id, providerId, category, subcategory, seed, mediaType
   };
 }
 
+async function feedPost(id, providerId, seed, caption, query) {
+  const pexels = await fetchPexelsVideo(query);
+  const mediaUrl = pexels?.mediaUrl ?? SAMPLE_VIDEO_URL;
+  // Real uploads generate an actual video-frame thumbnail (see CreatePostScreen); seeding
+  // bypasses that upload flow, so a video post here gets either Pexels' own thumbnail or a
+  // stand-in picsum image instead.
+  const thumbnailUrl = pexels?.thumbnailUrl ?? `https://picsum.photos/seed/${seed}-thumb/800/1000`;
+  return {
+    id,
+    providerId,
+    mediaType: 'video',
+    mediaUrl,
+    thumbnailUrl,
+    caption,
+    likeCount: Math.floor(Math.random() * 60),
+    saveCount: Math.floor(Math.random() * 20),
+    commentCount: 0,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+}
+
 async function main() {
   if (!PEXELS_API_KEY) {
     console.log('ℹ️  No PEXELS_API_KEY set — using picsum.photos placeholders. Get a free key at pexels.com/api and re-run with PEXELS_API_KEY=xxxxx node scripts/seedEmulator.js for real hair/beauty media.');
   }
 
+  await wipeCollection('posts');
+
   const providers = await Promise.all([
-    sampleProvider('provider_1', 'London', 51.5072, -0.1276, 'Aisha Styles', ['Hair'], ['4A', '4B', 'Braids'], 'verified', 'hairdresser portrait'),
-    sampleProvider('provider_2', 'London', 51.5090, -0.1180, 'Maya Nails', ['Nails'], undefined, undefined, 'nail technician portrait'),
-    sampleProvider('provider_3', 'Birmingham', 52.4862, -1.8904, 'Noor Beauty', ['Hair', 'Nails'], ['3C', 'Locs', 'Natural'], 'pending', 'beautician portrait'),
+    sampleProvider('provider_1', 'London', 51.5072, -0.1276, 'Aisha Styles', ['Hair', 'Styling'], ['4A', '4B', 'Braids'], 'verified', 'hairdresser portrait', [
+      { name: 'Classic haircut', price: 25, category: 'Hair', durationMins: 30 },
+      { name: 'Silk press', price: 45, category: 'Styling', durationMins: 60 },
+    ]),
+    sampleProvider('provider_2', 'London', 51.5090, -0.1180, 'Maya Nails', ['Nails'], undefined, undefined, 'nail technician portrait', [
+      { name: 'Full set nails', price: 40, category: 'Nails', durationMins: 60 },
+      { name: 'Gel manicure', price: 28, category: 'Nails', durationMins: 45 },
+    ]),
+    sampleProvider('provider_3', 'Birmingham', 52.4862, -1.8904, 'Noor Beauty', ['Hair', 'Esthetics', 'Waxing'], ['3C', 'Locs', 'Natural'], 'pending', 'beautician portrait', [
+      { name: 'Facial treatment', price: 55, category: 'Esthetics', durationMins: 50 },
+      { name: 'Eyebrow wax', price: 15, category: 'Waxing', durationMins: 20 },
+    ]),
+    sampleProvider('provider_4', 'Manchester', 53.4808, -2.2426, 'Zara Glam', ['Makeup', 'Bridal'], undefined, 'verified', 'makeup artist portrait', [
+      { name: 'Glam makeup', price: 60, category: 'Makeup', durationMins: 60 },
+      { name: 'Bridal trial', price: 90, category: 'Bridal', durationMins: 90 },
+    ]),
+    sampleProvider('provider_5', 'London', 51.5155, -0.0922, 'Kwame Cuts', ['Barber'], undefined, 'verified', 'barber portrait', [
+      { name: 'Skin fade', price: 22, category: 'Barber', durationMins: 30 },
+      { name: 'Beard trim', price: 12, category: 'Barber', durationMins: 15 },
+    ]),
   ]);
 
   for (const p of providers) {
@@ -181,6 +224,12 @@ async function main() {
     provider_3: [
       sampleReview('seed_booking_3a', 'provider_3', 'Grace O.', 5, 'Professional and friendly, highly recommend.'),
     ],
+    provider_4: [
+      sampleReview('seed_booking_4a', 'provider_4', 'Priya S.', 5, 'Flawless glam, my makeup lasted all night.'),
+    ],
+    provider_5: [
+      sampleReview('seed_booking_5a', 'provider_5', 'Marcus D.', 5, 'Cleanest fade in the city, no question.'),
+    ],
   };
 
   for (const [providerId, reviews] of Object.entries(reviewsByProvider)) {
@@ -194,18 +243,68 @@ async function main() {
       .set({ ratings: { average, count: reviews.length } }, { merge: true });
   }
 
-  const posts = await Promise.all([
-    samplePost('post_1', 'provider_1', 'Hair', 'Braids', 'aisha-braids-1', 'image', ['4A', '4B', 'Braids'], 'box braids hairstyle'),
-    samplePost('post_2', 'provider_1', 'Hair', 'Color & Highlights', 'aisha-color-1', 'image', undefined, 'hair coloring highlights'),
-    samplePost('post_3', 'provider_1', 'Hair', 'Blowout', 'aisha-blowout-1', 'video', undefined, 'hair blowout styling'),
-    samplePost('post_4', 'provider_2', 'Nails', 'Nail Art', 'maya-nailart-1', 'image', undefined, 'nail art design'),
-    samplePost('post_5', 'provider_2', 'Nails', 'Acrylics', 'maya-acrylics-1', 'image', undefined, 'acrylic nails'),
-    samplePost('post_6', 'provider_3', 'Hair', 'Extensions', 'noor-extensions-1', 'image', undefined, 'hair extensions'),
-    samplePost('post_7', 'provider_3', 'Nails', 'Gel', 'noor-gel-1', 'image', undefined, 'gel nails manicure'),
+  // Gallery photos: several per service category (not just one), so Discover feels alive and
+  // every category chip (Hair, Nails, Makeup, Barber, Esthetics, Styling, Bridal, Waxing) has a
+  // real, browsable grid rather than one or two lonely tiles.
+  const galleryPosts = await Promise.all([
+    // Hair (provider_1 x4, provider_3 x2)
+    galleryPost('post_1', 'provider_1', 'Hair', 'Braids', 'aisha-braids-1', ['4A', '4B', 'Braids'], 'box braids hairstyle'),
+    galleryPost('post_2', 'provider_1', 'Hair', 'Color & Highlights', 'aisha-color-1', undefined, 'hair coloring highlights'),
+    galleryPost('post_3', 'provider_1', 'Hair', 'Cut & Trim', 'aisha-cut-1', undefined, 'hair salon haircut'),
+    galleryPost('post_4', 'provider_1', 'Hair', 'Relaxer', 'aisha-relaxer-1', undefined, 'natural afro hair'),
+    galleryPost('post_5', 'provider_3', 'Hair', 'Extensions', 'noor-extensions-1', undefined, 'hair extensions salon'),
+    galleryPost('post_6', 'provider_3', 'Hair', 'Locs', 'noor-locs-1', ['Locs', 'Natural'], 'locs hairstyle'),
+    // Styling (provider_1 x3)
+    galleryPost('post_7', 'provider_1', 'Styling', 'Blow Dry', 'aisha-blowdry-1', undefined, 'hair blow dry salon'),
+    galleryPost('post_8', 'provider_1', 'Styling', 'Updo', 'aisha-updo-1', undefined, 'updo hairstyle'),
+    galleryPost('post_9', 'provider_1', 'Styling', 'Silk Press', 'aisha-silkpress-1', undefined, 'silk press hair'),
+    // Nails (provider_2 x5)
+    galleryPost('post_10', 'provider_2', 'Nails', 'Nail Art', 'maya-nailart-1', undefined, 'nail art design'),
+    galleryPost('post_11', 'provider_2', 'Nails', 'Acrylics', 'maya-acrylics-1', undefined, 'acrylic nails'),
+    galleryPost('post_12', 'provider_2', 'Nails', 'Gel', 'maya-gel-1', undefined, 'gel manicure'),
+    galleryPost('post_13', 'provider_2', 'Nails', 'Pedicure', 'maya-pedicure-1', undefined, 'nail salon pedicure'),
+    galleryPost('post_14', 'provider_2', 'Nails', 'Dip Powder', 'maya-dip-1', undefined, 'colorful nail art'),
+    // Esthetics (provider_3 x3)
+    galleryPost('post_15', 'provider_3', 'Esthetics', 'Facial', 'noor-facial-1', undefined, 'facial spa treatment'),
+    galleryPost('post_16', 'provider_3', 'Esthetics', 'Lash Lift', 'noor-lash-1', undefined, 'lash lift beauty'),
+    galleryPost('post_17', 'provider_3', 'Esthetics', 'Brow Lamination', 'noor-brow-lam-1', undefined, 'eyebrow lamination beauty'),
+    // Waxing (provider_3 x3)
+    galleryPost('post_18', 'provider_3', 'Waxing', 'Eyebrows', 'noor-brows-1', undefined, 'eyebrow shaping wax'),
+    galleryPost('post_19', 'provider_3', 'Waxing', 'Full Face', 'noor-fullface-1', undefined, 'brow threading salon'),
+    galleryPost('post_20', 'provider_3', 'Waxing', 'Legs', 'noor-legs-1', undefined, 'beauty waxing salon'),
+    // Makeup (provider_4 x4)
+    galleryPost('post_21', 'provider_4', 'Makeup', 'Glam', 'zara-glam-1', undefined, 'glam makeup look'),
+    galleryPost('post_22', 'provider_4', 'Makeup', 'Everyday', 'zara-everyday-1', undefined, 'everyday makeup'),
+    galleryPost('post_23', 'provider_4', 'Makeup', 'Editorial', 'zara-editorial-1', undefined, 'editorial makeup art'),
+    galleryPost('post_24', 'provider_4', 'Makeup', 'Special FX', 'zara-fx-1', undefined, 'makeup artist applying'),
+    // Bridal (provider_4 x3)
+    galleryPost('post_25', 'provider_4', 'Bridal', 'Makeup Trial', 'zara-bridal-makeup-1', undefined, 'bridal makeup'),
+    galleryPost('post_26', 'provider_4', 'Bridal', 'Hair Trial', 'zara-bridal-hair-1', undefined, 'bridal hair updo'),
+    galleryPost('post_27', 'provider_4', 'Bridal', 'Day-Of Styling', 'zara-bridal-day-1', undefined, 'wedding hairstyle'),
+    // Barber (provider_5 x4)
+    galleryPost('post_28', 'provider_5', 'Barber', 'Fade', 'kwame-fade-1', undefined, 'barber fade haircut'),
+    galleryPost('post_29', 'provider_5', 'Barber', 'Beard Trim', 'kwame-beard-1', undefined, 'beard trim barbershop'),
+    galleryPost('post_30', 'provider_5', 'Barber', 'Line Up', 'kwame-lineup-1', undefined, 'mens haircut lineup'),
+    galleryPost('post_31', 'provider_5', 'Barber', 'Hot Towel Shave', 'kwame-shave-1', undefined, 'barbershop haircut'),
   ]);
 
-  for (const post of posts) {
-    await db.collection('posts').doc(post.id).set(post, { merge: true });
+  // Feed videos: TikTok-style, no category — two per provider so For You has enough real
+  // vertical video content to scroll through, kept entirely separate from the gallery above.
+  const feedPosts = await Promise.all([
+    feedPost('post_v1', 'provider_1', 'aisha-blowout-vid', 'Blowout transformation ✨', 'hair blowout styling'),
+    feedPost('post_v2', 'provider_1', 'aisha-transform-vid', 'Start to finish transformation', 'hair transformation salon'),
+    feedPost('post_v3', 'provider_2', 'maya-nailart-vid', 'Nail art from start to finish 💅', 'nail art process'),
+    feedPost('post_v4', 'provider_2', 'maya-manicure-vid', 'Manicure process, up close', 'manicure process video'),
+    feedPost('post_v5', 'provider_3', 'noor-facial-vid', 'Facial routine for glowing skin', 'facial skincare routine'),
+    feedPost('post_v6', 'provider_3', 'noor-haircare-vid', 'Natural hair wash day routine', 'natural hair wash routine'),
+    feedPost('post_v7', 'provider_4', 'zara-makeup-vid', 'Full glam transformation', 'makeup transformation'),
+    feedPost('post_v8', 'provider_4', 'zara-bridal-vid', 'Bridal makeup application', 'bridal makeup application'),
+    feedPost('post_v9', 'provider_5', 'kwame-fade-vid', 'Fresh fade, start to finish', 'barber haircut fade'),
+    feedPost('post_v10', 'provider_5', 'kwame-beard-vid', 'Beard grooming session', 'beard grooming barbershop'),
+  ]);
+
+  for (const post of [...galleryPosts, ...feedPosts]) {
+    await db.collection('posts').doc(post.id).set(post);
   }
 
   // Example client user doc (you'll normally create users via Firebase Auth).
@@ -228,7 +327,7 @@ async function main() {
     { merge: true }
   );
 
-  console.log('✅ Seeded emulator with sample providers, posts + demo client.');
+  console.log(`✅ Seeded emulator with ${providers.length} providers, ${galleryPosts.length} gallery photos, ${feedPosts.length} feed videos + demo client.`);
   console.log(`Project: ${PROJECT_ID}`);
   console.log(`Firestore emulator: ${FIRESTORE_EMULATOR_HOST}`);
 }

@@ -142,7 +142,7 @@ const UserProfileScreen = () => {
         setError(profileRes.error || "User not found");
       }
       if (statsRes.success && statsRes.data) setStats(statsRes.data);
-      if (postsRes.success && postsRes.data) setPosts(postsRes.data.filter((p) => !p.category));
+      if (postsRes.success && postsRes.data) setPosts(postsRes.data);
       setLoading(false);
     });
   }, [userId]);

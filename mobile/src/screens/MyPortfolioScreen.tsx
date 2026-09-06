@@ -85,14 +85,6 @@ const MyPortfolioScreen = () => {
           overflow: "hidden",
           backgroundColor: colors.surface,
         },
-        videoBadge: {
-          position: "absolute",
-          top: 4,
-          right: 4,
-          backgroundColor: "rgba(0,0,0,0.5)",
-          borderRadius: 10,
-          padding: 3,
-        },
         deleteButton: {
           position: "absolute",
           bottom: 4,
@@ -113,9 +105,9 @@ const MyPortfolioScreen = () => {
     const uid = AuthService.getCurrentFirebaseUser()?.uid;
     if (!uid) return;
     const res = await apiService.getProviderPosts(uid);
-    // Portfolio = categorized (service) posts only; everyday/personal posts (no category) show
-    // on the main Profile page instead — see ProfileScreen's posts grid.
-    if (res.success && res.data) setPosts(res.data.filter((p) => !!p.category));
+    // Portfolio = gallery photos only (mediaType "image" + category); feed videos live in For
+    // You instead, not here — see CreatePostScreen's gallery/feed split.
+    if (res.success && res.data) setPosts(res.data.filter((p) => p.mediaType === "image" && !!p.category));
   }, []);
 
   useFocusEffect(
@@ -175,7 +167,7 @@ const MyPortfolioScreen = () => {
       >
         <View style={styles.header}>
           <Text style={styles.heading}>My Portfolio</Text>
-          <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate("CreatePost")}>
+          <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate("CreatePost", { destination: "gallery" })}>
             <Ionicons name="add" size={20} color="#FFFFFF" />
             <Text style={styles.addButtonText}>Add post</Text>
           </TouchableOpacity>
@@ -187,7 +179,7 @@ const MyPortfolioScreen = () => {
             title="No posts yet"
             subtitle="Add a post with a category to start building your portfolio."
             actionLabel="Add post"
-            onAction={() => navigation.navigate("CreatePost")}
+            onAction={() => navigation.navigate("CreatePost", { destination: "gallery" })}
           />
         ) : (
           <View style={styles.grid}>
@@ -200,11 +192,6 @@ const MyPortfolioScreen = () => {
                   transition={200}
                   cachePolicy="memory-disk"
                 />
-                {post.mediaType === "video" ? (
-                  <View style={styles.videoBadge}>
-                    <Ionicons name="play" size={12} color="#FFFFFF" />
-                  </View>
-                ) : null}
                 <TouchableOpacity style={styles.deleteButton} onPress={() => requestDelete(post)}>
                   <Ionicons name="trash" size={14} color="#FFFFFF" />
                 </TouchableOpacity>
